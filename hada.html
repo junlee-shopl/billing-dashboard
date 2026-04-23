@@ -272,7 +272,7 @@ async function loadInvoices() {
 
   try {
     const res = await fetch(
-      `${API_BASE}/api/v1/invoices?billing_period=${BILLING_PERIOD}&page_size=200`
+      `${API_BASE}/api/v1/invoices?service=HADA&billing_period=${BILLING_PERIOD}&page_size=5000`
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
@@ -501,7 +501,7 @@ async function openConfirm(invoiceId) {
     '<div class="loading"><span class="spinner"></span>정보 불러오는 중...</div>';
 
   try {
-    const invRes = await fetch(`${API_BASE}/api/v1/invoices?billing_period=${BILLING_PERIOD}&page_size=200`);
+    const invRes = await fetch(`${API_BASE}/api/v1/invoices?service=HADA&billing_period=${BILLING_PERIOD}&page_size=5000`);
     const invData = await invRes.json();
     if (!invData.items) {
       throw new Error(`API 응답 오류: ${JSON.stringify(invData).slice(0, 200)}`);
@@ -638,7 +638,7 @@ async function openCancelConfirm(invoiceId) {
     '<div class="loading"><span class="spinner"></span>정보 불러오는 중...</div>';
 
   try {
-    const invRes = await fetch(`${API_BASE}/api/v1/invoices?billing_period=${BILLING_PERIOD}&page_size=200`);
+    const invRes = await fetch(`${API_BASE}/api/v1/invoices?service=HADA&billing_period=${BILLING_PERIOD}&page_size=5000`);
     const invData = await invRes.json();
     const invoice = invData.items.find(i => i.id === invoiceId);
     if (!invoice) throw new Error('인보이스를 찾을 수 없습니다');
