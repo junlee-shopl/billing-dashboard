@@ -59,6 +59,8 @@ tbody tr:last-child td{border-bottom:none}
 .badge.issued, .badge.awaiting_payment{background:var(--green-bg);color:var(--green)}
 .badge.failed{background:var(--red-bg);color:var(--red)}
 .badge.paid{background:var(--blue-bg);color:var(--blue)}
+.badge.cancelled{background:#F0EEEA;color:var(--muted)}
+.badge.overdue{background:var(--red-bg);color:var(--red)}
 
 /* ── Buttons ── */
 .btn{padding:7px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:var(--surface);color:var(--text);transition:all .12s;white-space:nowrap;font-family:inherit}
@@ -177,6 +179,21 @@ tbody tr:last-child td{border-bottom:none}
   </div>
 </div>
 
+<!-- ═══ Cancel Confirm Modal ═══ -->
+<div class="modal-overlay" id="cancelModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">🗑️ 세금계산서 발행 취소</div>
+      <div class="modal-close" onclick="closeCancel()">✕</div>
+    </div>
+    <div class="modal-body" id="cancelBody"></div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeCancel()">닫기</button>
+      <button class="btn danger" id="cancelBtn" onclick="executeCancel()">취소 실행</button>
+    </div>
+  </div>
+</div>
+
 <!-- ═══ Result Modal ═══ -->
 <div class="modal-overlay" id="resultModal">
   <div class="modal">
@@ -265,6 +282,7 @@ function renderTable(items) {
 
   const rows = items.map(inv => {
     const canIssue = ['SCHEDULED', 'FAILED'].includes(inv.status);
+    const canCancel = ['ISSUED', 'AWAITING_PAYMENT', 'OVERDUE'].includes(inv.status);
     const statusLabel = {
       SCHEDULED: '발행 대기',
       ISSUED: '발행 완료',
@@ -274,6 +292,17 @@ function renderTable(items) {
       CANCELLED: '취소됨',
       OVERDUE: '연체'
     }[inv.status] || inv.status;
+
+    let actionBtn;
+    if (canIssue) {
+      actionBtn = `<button class="btn pri sm" onclick="openConfirm(${inv.id})">발행</button>`;
+    } else if (canCancel) {
+      actionBtn = `<button class="btn danger sm" onclick="openCancelConfirm(${inv.id})">발행 취소</button>`;
+    } else if (inv.status === 'PAID') {
+      actionBtn = `<button class="btn sm" disabled>완료</button>`;
+    } else {
+      actionBtn = `<button class="btn sm" disabled>—</button>`;
+    }
 
     return `
       <tr>
@@ -287,11 +316,7 @@ function renderTable(items) {
         <td class="num">₩${fmt(inv.vat_amount)}</td>
         <td class="num fw">₩${fmt(inv.total_amount)}</td>
         <td><span class="badge ${inv.status.toLowerCase()}">${statusLabel}</span></td>
-        <td>
-          ${canIssue
-            ? `<button class="btn pri sm" onclick="openConfirm(${inv.id})">발행</button>`
-            : `<button class="btn sm" disabled>완료</button>`}
-        </td>
+        <td>${actionBtn}</td>
       </tr>
     `;
   }).join('');
@@ -452,6 +477,121 @@ function showResult(success, invoice, errorDetail) {
 
 function closeResult() {
   document.getElementById('resultModal').classList.remove('open');
+}
+
+// ═══════════════════════════════════════════
+// 발행 취소 flow
+// ═══════════════════════════════════════════
+let cancelTarget = null;
+
+async function openCancelConfirm(invoiceId) {
+  const modal = document.getElementById('cancelModal');
+  modal.classList.add('open');
+  document.getElementById('cancelBody').innerHTML =
+    '<div class="loading"><span class="spinner"></span>정보 불러오는 중...</div>';
+
+  try {
+    const invRes = await fetch(`${API_BASE}/api/v1/invoices?billing_period=${BILLING_PERIOD}&page_size=200`);
+    const invData = await invRes.json();
+    const invoice = invData.items.find(i => i.id === invoiceId);
+    if (!invoice) throw new Error('인보이스를 찾을 수 없습니다');
+
+    const custRes = await fetch(`${API_BASE}/api/v1/customers/${invoice.customer_id}`);
+    const customer = await custRes.json();
+
+    cancelTarget = { invoice, customer };
+
+    document.getElementById('cancelBody').innerHTML = `
+      <div class="kv"><div class="kv-key">고객사</div><div class="kv-val fw">${customer.company_name}</div></div>
+      <div class="kv"><div class="kv-key">팝빌 문서번호</div><div class="kv-val" style="font-family:monospace;font-size:12px">${invoice.popbill_invoice_id || '-'}</div></div>
+      <div class="kv"><div class="kv-key">청구 기간</div><div class="kv-val">${invoice.billing_period}</div></div>
+      <div class="kv"><div class="kv-key">총요금</div><div class="kv-val fw">₩${fmt(invoice.total_amount)}</div></div>
+      <div style="margin-top:14px">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:6px">취소 사유 (선택)</div>
+        <textarea id="cancelReason" rows="2" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;resize:vertical" placeholder="예: 금액 오류, 고객 요청 등"></textarea>
+      </div>
+      <div class="warning-box danger">
+        ⚠️ <strong>발행 취소</strong>하면 국세청에 취소가 전송되고 되돌릴 수 없습니다. 이미 팝빌에서 수동 취소한 경우에도 안전하게 대시보드 상태만 동기화됩니다.
+      </div>
+    `;
+  } catch (e) {
+    document.getElementById('cancelBody').innerHTML =
+      `<div class="error-box">정보 로드 실패: ${e.message}</div>`;
+  }
+}
+
+function closeCancel() {
+  document.getElementById('cancelModal').classList.remove('open');
+  cancelTarget = null;
+}
+
+async function executeCancel() {
+  if (!cancelTarget) return;
+  const invoiceId = cancelTarget.invoice.id;
+  const reason = document.getElementById('cancelReason')?.value?.trim() || null;
+  const btn = document.getElementById('cancelBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>취소 처리 중...';
+
+  try {
+    const res = await fetch(
+      `${API_BASE}/api/v1/invoices/${invoiceId}/cancel`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(reason ? { reason } : {}),
+      }
+    );
+    const data = await res.json();
+    closeCancel();
+
+    if (res.ok && data.status === 'CANCELLED') {
+      showCancelResult(true, data);
+    } else {
+      showCancelResult(false, data, { error: data.detail || `HTTP ${res.status}` });
+    }
+
+    loadInvoices();
+  } catch (e) {
+    closeCancel();
+    showCancelResult(false, null, { error: e.message });
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '취소 실행';
+  }
+}
+
+function showCancelResult(success, invoice, errorDetail) {
+  const modal = document.getElementById('resultModal');
+  const title = document.getElementById('resultTitle');
+  const body = document.getElementById('resultBody');
+  const link = document.getElementById('popbillLink');
+
+  if (success) {
+    title.textContent = '✅ 발행 취소 완료';
+    body.innerHTML = `
+      <div class="success-box">
+        세금계산서가 정상적으로 취소되었습니다. 상태가 <strong>취소됨</strong>으로 변경됐어요.
+      </div>
+      <div style="margin-top:16px">
+        <div class="kv"><div class="kv-key">팝빌 문서번호</div><div class="kv-val">${invoice.popbill_invoice_id || '-'}</div></div>
+        <div class="kv"><div class="kv-key">상태</div><div class="kv-val"><span class="badge cancelled">취소됨</span></div></div>
+      </div>
+    `;
+    link.style.display = 'inline-flex';
+  } else {
+    title.textContent = '❌ 취소 실패';
+    body.innerHTML = `
+      <div class="error-box">
+        <strong>에러:</strong><br>${errorDetail?.error || '알 수 없는 오류'}
+      </div>
+      <div class="warning-box" style="margin-top:16px">
+        위 메시지를 Jun에게 공유해주세요.
+      </div>
+    `;
+    link.style.display = 'none';
+  }
+  modal.classList.add('open');
 }
 
 // ═══════════════════════════════════════════
