@@ -376,13 +376,15 @@ function closeConfirm() {
 // ═══════════════════════════════════════════
 async function executeIssue() {
   if (!currentInvoice) return;
+  // IMPORTANT: closeConfirm() resets currentInvoice to null, so save the id first
+  const invoiceId = currentInvoice.invoice.id;
   const btn = document.getElementById('confirmBtn');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>발행 중...';
 
   try {
     const res = await fetch(
-      `${API_BASE}/api/v1/invoices/${currentInvoice.invoice.id}/issue`,
+      `${API_BASE}/api/v1/invoices/${invoiceId}/issue`,
       { method: 'POST' }
     );
     const data = await res.json();
@@ -393,7 +395,7 @@ async function executeIssue() {
       showResult(true, data);
     } else {
       // FAILED — fetch popbill_response for error detail
-      const rawRes = await fetch(`${API_BASE}/api/v1/debug/invoice/${currentInvoice.invoice.id}/raw`);
+      const rawRes = await fetch(`${API_BASE}/api/v1/debug/invoice/${invoiceId}/raw`);
       const raw = await rawRes.json();
       showResult(false, data, raw.popbill_response);
     }
