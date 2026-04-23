@@ -374,6 +374,30 @@ tr.group-row.expanded .group-chevron{transform:rotate(90deg)}
   </div>
 </div>
 
+<!-- Issue Password Prompt (Stella 비번 입력) -->
+<div class="modal-overlay" id="issuePasswordModal">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-head">
+      <div class="modal-title">🔒 발행 비밀번호 확인</div>
+      <div class="modal-close" onclick="_cancelPasswordPrompt()">✕</div>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:13px;margin-bottom:10px">세금계산서 발행/취소는 보호된 작업입니다. Stella가 알고 있는 비밀번호를 입력해주세요.</div>
+      <input type="password" id="issuePwInput" placeholder="비밀번호" autocomplete="off"
+             style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:6px;font-size:14px"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();_submitPasswordPrompt();}">
+      <div id="issuePwError" style="font-size:12px;color:var(--red);margin-top:8px;display:none"></div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-top:12px;cursor:pointer">
+        <input type="checkbox" id="issuePwRemember" checked> 이 브라우저 세션 동안 기억 (탭 닫으면 리셋)
+      </label>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="_cancelPasswordPrompt()">취소</button>
+      <button class="btn pri" onclick="_submitPasswordPrompt()">확인</button>
+    </div>
+  </div>
+</div>
+
 <!-- Bulk Issue Confirm -->
 <div class="modal-overlay" id="bulkIssueModal">
   <div class="modal" style="max-width:640px">
@@ -442,6 +466,68 @@ const API_BASE = 'https://billing-management-api.onrender.com';
 let currentInvoice = null;
 let currentCustomerEdit = null;
 let currentPartnerEdit = null;
+
+// ─── 발행 비밀번호 (세션 스토리지에만 저장, 탭 닫으면 소멸) ───
+const ISSUE_PW_KEY = 'billing_issue_pw';
+let _pwPromptResolver = null;
+
+function _getCachedPassword() {
+  try { return sessionStorage.getItem(ISSUE_PW_KEY) || null; } catch { return null; }
+}
+
+function _setCachedPassword(pw) {
+  try { sessionStorage.setItem(ISSUE_PW_KEY, pw); } catch {}
+}
+
+function _clearCachedPassword() {
+  try { sessionStorage.removeItem(ISSUE_PW_KEY); } catch {}
+}
+
+function promptIssuePassword({ errorMsg = null } = {}) {
+  return new Promise(resolve => {
+    const cached = _getCachedPassword();
+    if (cached && !errorMsg) { resolve(cached); return; }
+    _pwPromptResolver = resolve;
+    const modal = document.getElementById('issuePasswordModal');
+    const input = document.getElementById('issuePwInput');
+    const err = document.getElementById('issuePwError');
+    input.value = '';
+    if (errorMsg) { err.textContent = errorMsg; err.style.display = 'block'; }
+    else { err.style.display = 'none'; }
+    modal.classList.add('open');
+    setTimeout(() => input.focus(), 50);
+  });
+}
+
+function _submitPasswordPrompt() {
+  const input = document.getElementById('issuePwInput');
+  const remember = document.getElementById('issuePwRemember').checked;
+  const pw = input.value;
+  if (!pw) { return; }
+  if (remember) _setCachedPassword(pw);
+  document.getElementById('issuePasswordModal').classList.remove('open');
+  if (_pwPromptResolver) { _pwPromptResolver(pw); _pwPromptResolver = null; }
+}
+
+function _cancelPasswordPrompt() {
+  document.getElementById('issuePasswordModal').classList.remove('open');
+  if (_pwPromptResolver) { _pwPromptResolver(null); _pwPromptResolver = null; }
+}
+
+/** Fetch wrapper that injects X-Issue-Password header + retries once on 401. */
+async function fetchWithIssuePw(url, options = {}) {
+  const pw = await promptIssuePassword();
+  if (!pw) return { aborted: true };
+  const headers = { ...(options.headers || {}), 'X-Issue-Password': pw };
+  let res = await fetch(url, { ...options, headers });
+  if (res.status === 401) {
+    _clearCachedPassword();
+    const retryPw = await promptIssuePassword({ errorMsg: '비밀번호가 올바르지 않습니다. 다시 입력해주세요.' });
+    if (!retryPw) return { aborted: true };
+    res = await fetch(url, { ...options, headers: { ...(options.headers || {}), 'X-Issue-Password': retryPw } });
+  }
+  return { response: res };
+}
 
 const VIEW_TITLES = {
   'shopl': { title: '샤플 고객사', sub: 'SHOPL 고객사 월별 청구 및 발행' },
@@ -829,6 +915,10 @@ async function executeBulkIssue() {
   let failed = 0;
   const failures = [];
 
+  // 첫 요청 전에 비번을 한 번만 묻기 — 이후 자동으로 캐시된 비번 사용됨
+  const firstPw = await promptIssuePassword();
+  if (!firstPw) { closeModal('bulkIssueModal'); btn.disabled = false; btn.innerHTML = '일괄 발행 실행'; return; }
+
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
     const g = _getGroup(key);
@@ -837,11 +927,12 @@ async function executeBulkIssue() {
     const actionCell = document.getElementById(`groupAction-${key}`);
     if (actionCell) actionCell.innerHTML = '<span class="spinner"></span><span style="color:var(--muted)">발행 중</span>';
     try {
-      const res = await fetch(`${API_BASE}/api/v1/invoices/issue-group`, {
+      const { response: res, aborted } = await fetchWithIssuePw(`${API_BASE}/api/v1/invoices/issue-group`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ invoice_ids: g.children.map(c => c.id) }),
       });
+      if (aborted) { failed++; failures.push({ label: g.company_name, error: 'cancelled by user' }); continue; }
       const data = await res.json();
       if (res.ok && data.status === 'ISSUED') {
         success++;
@@ -923,11 +1014,12 @@ async function executeGroupIssue() {
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>발행 중...';
   try {
-    const res = await fetch(`${API_BASE}/api/v1/invoices/issue-group`, {
+    const { response: res, aborted } = await fetchWithIssuePw(`${API_BASE}/api/v1/invoices/issue-group`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ invoice_ids: g.children.map(c => c.id) }),
     });
+    if (aborted) { btn.disabled = false; btn.innerHTML = '발행 실행 (1장)'; return; }
     const data = await res.json();
     closeModal('confirmModal');
     if (res.ok && data.status === 'ISSUED') {
@@ -981,7 +1073,7 @@ async function executeGroupCancel() {
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>취소 처리 중...';
   try {
-    const res = await fetch(`${API_BASE}/api/v1/invoices/cancel-group`, {
+    const { response: res, aborted } = await fetchWithIssuePw(`${API_BASE}/api/v1/invoices/cancel-group`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -989,6 +1081,7 @@ async function executeGroupCancel() {
         reason: reason || undefined,
       }),
     });
+    if (aborted) { btn.disabled = false; btn.innerHTML = '취소 실행'; return; }
     const data = await res.json();
     closeModal('cancelModal');
     if (res.ok && data.status === 'CANCELLED') {
@@ -1052,7 +1145,8 @@ async function executeIssue() {
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>발행 중...';
   try {
-    const res = await fetch(`${API_BASE}/api/v1/invoices/${currentInvoice.invoice.id}/issue`, { method: 'POST' });
+    const { response: res, aborted } = await fetchWithIssuePw(`${API_BASE}/api/v1/invoices/${currentInvoice.invoice.id}/issue`, { method: 'POST' });
+    if (aborted) { btn.disabled = false; btn.innerHTML = '발행 실행'; return; }
     const data = await res.json();
     closeModal('confirmModal');
     if (data.status === 'AWAITING_PAYMENT' || data.status === 'ISSUED') {
@@ -1115,11 +1209,12 @@ async function executeCancel() {
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>취소 처리 중...';
   try {
-    const res = await fetch(`${API_BASE}/api/v1/invoices/${invoiceId}/cancel`, {
+    const { response: res, aborted } = await fetchWithIssuePw(`${API_BASE}/api/v1/invoices/${invoiceId}/cancel`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(reason ? { reason } : {}),
     });
+    if (aborted) { btn.disabled = false; btn.innerHTML = '취소 실행'; return; }
     const data = await res.json();
     closeModal('cancelModal');
     cancelTarget = null;
