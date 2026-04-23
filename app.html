@@ -83,6 +83,16 @@ tbody tr:last-child td{border-bottom:none}
 .badge.failed{background:var(--red-bg);color:var(--red)}
 .badge.paid{background:var(--blue-bg);color:var(--blue)}
 .badge.cancelled, .badge.overdue{background:var(--red-bg);color:var(--red)}
+.badge.mixed{background:#F0EEEA;color:var(--muted)}
+tr.group-row{background:var(--surface);cursor:pointer}
+tr.group-row:hover{background:#FAFAF8}
+tr.group-row td:first-child{border-left:3px solid transparent}
+tr.group-row.expanded td:first-child{border-left-color:var(--blue)}
+tr.group-child td{background:#FAFBFD;border-bottom:1px dashed var(--border);color:var(--muted);font-size:12px}
+tr.group-child td.dashboard-cell{padding-left:40px;color:var(--text)}
+.group-chevron{display:inline-block;width:12px;text-align:center;color:var(--muted);margin-right:4px;transition:transform .15s}
+tr.group-row.expanded .group-chevron{transform:rotate(90deg)}
+.group-count-pill{display:inline-block;padding:1px 7px;border-radius:10px;background:var(--blue-bg);color:var(--blue);font-size:11px;font-weight:600;margin-left:8px}
 .badge.kr{background:var(--blue-bg);color:var(--blue)}
 .badge.overseas{background:var(--purple-bg);color:var(--purple)}
 .badge.hada{background:var(--green-bg);color:var(--green)}
@@ -563,61 +573,75 @@ async function loadHada() {
 }
 
 // ═══════════════════════════════════════════
-// 공통 인보이스 테이블 (체크박스 + 일괄발행)
+// 공통 인보이스 테이블 (법인 단위 그룹핑 + 일괄발행)
 // ═══════════════════════════════════════════
-let tableItems = [];  // 현재 렌더된 items (bulk issue에서 참조)
+let tableItems = [];  // flat list
+let tableGroups = []; // grouped view (bulk issue 및 group actions에서 참조)
+
+function _normalizeBizNum(bn) { return String(bn || '').replace(/\D/g, ''); }
+
+function groupInvoices(items) {
+  const index = new Map();
+  const groups = [];
+  for (const inv of items) {
+    const bn = _normalizeBizNum(inv.business_number);
+    // 사업자번호 없으면 그룹핑 대상 제외 (각 row 개별 그룹으로)
+    const key = bn
+      ? `bn:${bn}|${inv.billing_period}`
+      : `solo:${inv.id}`;
+    if (!index.has(key)) {
+      const g = {
+        key,
+        grouped: !!bn,
+        business_number: inv.business_number || null,
+        billing_period: inv.billing_period,
+        company_name: inv.company_name,
+        children: [],
+      };
+      index.set(key, g);
+      groups.push(g);
+    }
+    index.get(key).children.push(inv);
+  }
+  for (const g of groups) {
+    g.supply = g.children.reduce((s, i) => s + Number(i.supply_amount || 0), 0);
+    g.vat = g.children.reduce((s, i) => s + Number(i.vat_amount || 0), 0);
+    g.total = g.children.reduce((s, i) => s + Number(i.total_amount || 0), 0);
+    const statuses = new Set(g.children.map(c => c.status));
+    g.statuses = [...statuses];
+    g.uniformStatus = statuses.size === 1 ? g.statuses[0] : null;
+    g.canIssue = g.statuses.every(s => s === 'SCHEDULED' || s === 'FAILED');
+    const cancelStatuses = new Set(['ISSUED', 'AWAITING_PAYMENT', 'OVERDUE']);
+    const pbIds = new Set(g.children.map(c => c.popbill_invoice_id).filter(Boolean));
+    g.canCancel = g.statuses.every(s => cancelStatuses.has(s)) && pbIds.size === 1;
+    g.paidCount = g.children.filter(c => c.status === 'PAID').length;
+  }
+  // total desc
+  groups.sort((a, b) => b.total - a.total);
+  return groups;
+}
 
 function renderInvoiceTable(area, items) {
   tableItems = items;
+  tableGroups = groupInvoices(items);
+
   if (!items.length) {
     area.innerHTML = '<div class="loading">📭 인보이스가 없습니다</div>';
     updateBulkIssueButton();
     return;
   }
 
-  const rows = items.map(inv => {
-    const canIssue = ['SCHEDULED', 'FAILED'].includes(inv.status);
-    const canCancel = ['ISSUED', 'AWAITING_PAYMENT', 'OVERDUE'].includes(inv.status);
-    let actionBtn;
-    if (canIssue) {
-      actionBtn = `<button class="btn pri sm" onclick="openIssueConfirm(${inv.id})">발행</button>`;
-    } else if (canCancel) {
-      actionBtn = `<button class="btn danger sm" onclick="openCancelConfirm(${inv.id})">발행 취소</button>`;
-    } else if (inv.status === 'PAID') {
-      actionBtn = `<button class="btn sm" disabled>완료</button>`;
-    } else {
-      actionBtn = `<button class="btn sm" disabled>—</button>`;
-    }
-    const checkbox = canIssue
-      ? `<input type="checkbox" class="bulk-issue-check" data-invoice-id="${inv.id}" onchange="updateBulkIssueButton()">`
-      : '';
-    return `
-      <tr id="invRow-${inv.id}">
-        <td style="width:36px;text-align:center">${checkbox}</td>
-        <td>
-          <div class="fw">${inv.company_name || '-'}</div>
-          <div class="sub">${inv.dashboard_name || ''}</div>
-        </td>
-        <td>${inv.business_name || '-'}</td>
-        <td>${inv.billing_period}</td>
-        <td class="num">₩${fmt(inv.supply_amount)}</td>
-        <td class="num">₩${fmt(inv.vat_amount)}</td>
-        <td class="num fw">₩${fmt(inv.total_amount)}</td>
-        <td>${statusBadge(inv.status)}</td>
-        <td id="invAction-${inv.id}">${actionBtn}</td>
-      </tr>`;
-  }).join('');
-
-  const hasIssuable = items.some(i => ['SCHEDULED', 'FAILED'].includes(i.status));
+  const rows = tableGroups.map(g => renderGroupRow(g)).join('');
+  const hasIssuableGroup = tableGroups.some(g => g.canIssue);
 
   area.innerHTML = `
     <div class="tbl-wrap-scroll">
     <table>
       <thead>
         <tr>
-          <th style="width:36px;text-align:center">${hasIssuable ? '<input type="checkbox" id="bulkSelectAll" onchange="toggleSelectAll(this)">' : ''}</th>
-          <th>고객사 (상호 / 표시명)</th>
-          <th>사업장명</th>
+          <th style="width:36px;text-align:center">${hasIssuableGroup ? '<input type="checkbox" id="bulkSelectAll" onchange="toggleSelectAll(this)">' : ''}</th>
+          <th>법인 / 상호</th>
+          <th>사업장</th>
           <th>사용월</th>
           <th>공급가액</th>
           <th>부가세</th>
@@ -627,25 +651,127 @@ function renderInvoiceTable(area, items) {
         </tr>
       </thead>
       <tbody>${rows}</tbody>
+      <tfoot>
+        <tr style="background:#FAFAF8;font-weight:600">
+          <td colspan="2" style="padding:10px 14px">합계 (${tableGroups.length} 법인 · ${items.length} 사업장)</td>
+          <td></td>
+          <td></td>
+          <td class="num">₩${fmt(tableGroups.reduce((s, g) => s + g.supply, 0))}</td>
+          <td class="num">₩${fmt(tableGroups.reduce((s, g) => s + g.vat, 0))}</td>
+          <td class="num">₩${fmt(tableGroups.reduce((s, g) => s + g.total, 0))}</td>
+          <td></td>
+          <td></td>
+        </tr>
+      </tfoot>
     </table>
     </div>
   `;
   updateBulkIssueButton();
 }
 
+function renderGroupRow(g) {
+  // 체크박스: 그룹 단위 — canIssue 상태일 때만
+  const cbox = g.canIssue
+    ? `<input type="checkbox" class="bulk-issue-check" data-group-key="${g.key}" onchange="event.stopPropagation(); updateBulkIssueButton()" onclick="event.stopPropagation()">`
+    : '';
+
+  // 액션 버튼
+  let actionBtn;
+  if (g.canIssue) {
+    actionBtn = `<button class="btn pri sm" onclick="event.stopPropagation(); openGroupIssueConfirm('${g.key}')">발행 (1장)</button>`;
+  } else if (g.canCancel) {
+    actionBtn = `<button class="btn danger sm" onclick="event.stopPropagation(); openGroupCancelConfirm('${g.key}')">발행 취소</button>`;
+  } else if (g.uniformStatus === 'PAID') {
+    actionBtn = `<button class="btn sm" disabled>완료</button>`;
+  } else if (g.uniformStatus === 'CANCELLED') {
+    actionBtn = `<button class="btn sm" disabled>취소됨</button>`;
+  } else {
+    actionBtn = `<button class="btn sm" disabled>—</button>`;
+  }
+
+  // 상태 뱃지: uniform이면 그 상태, mixed면 혼합 + 내역 요약
+  let statusHtml;
+  if (g.uniformStatus) {
+    statusHtml = statusBadge(g.uniformStatus);
+  } else {
+    statusHtml = `<span class="badge mixed" title="${g.statuses.join(', ')}">혼합 (${g.statuses.length})</span>`;
+    if (g.paidCount > 0 && g.paidCount < g.children.length) {
+      statusHtml += ` <span style="font-size:11px;color:var(--muted)">${g.paidCount}/${g.children.length} 입금</span>`;
+    }
+  }
+
+  // 사업장 컬럼 요약
+  const wpList = g.children.map(c => c.business_name || c.dashboard_name || '-');
+  const wpPreview = wpList.length > 1
+    ? `${wpList[0]} 외 ${wpList.length - 1}건`
+    : (wpList[0] || '-');
+
+  const bizLabel = g.business_number
+    ? `<div class="sub">사업자 ${g.business_number}</div>`
+    : '<div class="sub" style="color:var(--amber)">사업자번호 없음 (개별)</div>';
+
+  const countPill = g.grouped && g.children.length > 1
+    ? `<span class="group-count-pill">${g.children.length}개 사업장</span>`
+    : '';
+
+  const groupHead = `
+    <tr class="group-row" id="group-${g.key}" onclick="toggleGroup('${g.key}')">
+      <td style="width:36px;text-align:center">${cbox}</td>
+      <td>
+        <div class="fw"><span class="group-chevron">▸</span>${g.company_name || '-'}${countPill}</div>
+        ${bizLabel}
+      </td>
+      <td>${g.children.length > 1 ? wpPreview : (g.children[0]?.business_name || '-')}</td>
+      <td>${g.billing_period}</td>
+      <td class="num">₩${fmt(g.supply)}</td>
+      <td class="num">₩${fmt(g.vat)}</td>
+      <td class="num fw">₩${fmt(g.total)}</td>
+      <td>${statusHtml}</td>
+      <td id="groupAction-${g.key}">${actionBtn}</td>
+    </tr>`;
+
+  // 자식 row들 (기본 숨김)
+  const childRows = g.children.map(inv => `
+    <tr class="group-child" data-group-key="${g.key}" style="display:none">
+      <td></td>
+      <td class="dashboard-cell">↳ ${inv.dashboard_name || inv.business_name || '-'}</td>
+      <td>${inv.business_name || '-'}</td>
+      <td>${inv.billing_period}</td>
+      <td class="num">₩${fmt(inv.supply_amount)}</td>
+      <td class="num">₩${fmt(inv.vat_amount)}</td>
+      <td class="num fw">₩${fmt(inv.total_amount)}</td>
+      <td>${statusBadge(inv.status)}</td>
+      <td style="font-size:11px;color:var(--muted)">#${inv.id}</td>
+    </tr>`).join('');
+
+  return groupHead + childRows;
+}
+
+function toggleGroup(key) {
+  const row = document.getElementById('group-' + key);
+  if (!row) return;
+  const expanded = row.classList.toggle('expanded');
+  const children = document.querySelectorAll(`tr.group-child[data-group-key="${key}"]`);
+  children.forEach(c => { c.style.display = expanded ? 'table-row' : 'none'; });
+}
+
+function _getGroup(key) {
+  return tableGroups.find(g => g.key === key);
+}
+
 // ═══════════════════════════════════════════
-// 일괄 발행 flow
+// 일괄 발행 + 단일 그룹 발행 flow (법인 단위)
 // ═══════════════════════════════════════════
-function getSelectedBulkIds() {
+function getSelectedBulkGroupKeys() {
   return Array.from(document.querySelectorAll('.bulk-issue-check:checked'))
-    .map(el => parseInt(el.dataset.invoiceId))
-    .filter(n => !isNaN(n));
+    .map(el => el.dataset.groupKey)
+    .filter(Boolean);
 }
 
 function updateBulkIssueButton() {
   const btn = document.getElementById('bulkIssueBtn');
   if (!btn) return;
-  const count = getSelectedBulkIds().length;
+  const count = getSelectedBulkGroupKeys().length;
   document.getElementById('bulkIssueCount').textContent = count;
   btn.disabled = count === 0;
 }
@@ -655,35 +781,46 @@ function toggleSelectAll(master) {
   updateBulkIssueButton();
 }
 
+function _groupSummaryLine(g) {
+  const count = g.children.length;
+  const label = count > 1
+    ? `${g.company_name || '-'} <span style="color:var(--muted)">(${count} 사업장 · ${g.billing_period})</span>`
+    : `${g.company_name || '-'} <span style="color:var(--muted)">(${g.billing_period})</span>`;
+  return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #F0EEEA;font-size:12px">
+            <div>${label}</div>
+            <div class="num fw">₩${fmt(g.total)}</div>
+          </div>`;
+}
+
 async function openBulkIssueConfirm() {
-  const ids = getSelectedBulkIds();
-  if (!ids.length) return;
-  const selected = tableItems.filter(i => ids.includes(i.id));
-  const totalSum = selected.reduce((s, i) => s + Number(i.total_amount || 0), 0);
+  const keys = getSelectedBulkGroupKeys();
+  if (!keys.length) return;
+  const selected = keys.map(k => _getGroup(k)).filter(Boolean);
+  const totalSum = selected.reduce((s, g) => s + g.total, 0);
+  const totalInvoiceCount = selected.reduce((s, g) => s + g.children.length, 0);
   const envIsTest = document.getElementById('envBadge').className.includes('test');
 
-  const listHTML = selected.map(i =>
-    `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #F0EEEA;font-size:12px">
-       <div>${i.company_name || '-'} <span style="color:var(--muted)">(${i.billing_period})</span></div>
-       <div class="num fw">₩${fmt(i.total_amount)}</div>
-     </div>`).join('');
+  const listHTML = selected.map(_groupSummaryLine).join('');
 
   document.getElementById('bulkIssueList').innerHTML = `
-    <div style="font-size:13px;margin-bottom:10px"><strong>${ids.length}건</strong>을 일괄 발행합니다. 합계 <strong>₩${fmt(totalSum)}</strong></div>
+    <div style="font-size:13px;margin-bottom:10px">
+      <strong>${selected.length}개 법인</strong> (총 ${totalInvoiceCount} 사업장)을 합산해서 <strong>${selected.length}장의 세금계산서</strong>를 발행합니다.<br>
+      합계 <strong>₩${fmt(totalSum)}</strong>
+    </div>
     <div style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:0 12px;background:#FAFAF8">
       ${listHTML}
     </div>
     <div class="warning-box ${envIsTest ? '' : 'danger'}" style="margin-top:14px">
       ${envIsTest
         ? '🧪 <strong>테스트 모드</strong> — 국세청 실전송 안됨, 포인트 차감 없음'
-        : '⚠️ <strong>운영 모드</strong> — 모든 건이 국세청에 실제 전송되고 팝빌 포인트가 차감됩니다. 되돌릴 수 없으니 확인하세요.'}
+        : `⚠️ <strong>운영 모드</strong> — 팝빌 포인트 약 <strong>${selected.length * 100}원</strong> 차감됩니다. 되돌릴 수 없으니 확인하세요.`}
     </div>`;
   document.getElementById('bulkIssueModal').classList.add('open');
 }
 
 async function executeBulkIssue() {
-  const ids = getSelectedBulkIds();
-  if (!ids.length) { closeModal('bulkIssueModal'); return; }
+  const keys = getSelectedBulkGroupKeys();
+  if (!keys.length) { closeModal('bulkIssueModal'); return; }
 
   const btn = document.getElementById('bulkIssueExecBtn');
   btn.disabled = true;
@@ -692,26 +829,32 @@ async function executeBulkIssue() {
   let failed = 0;
   const failures = [];
 
-  for (let i = 0; i < ids.length; i++) {
-    const invoiceId = ids[i];
-    btn.innerHTML = `<span class="spinner"></span>${i + 1}/${ids.length} 처리 중...`;
-    const actionCell = document.getElementById(`invAction-${invoiceId}`);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const g = _getGroup(key);
+    if (!g) continue;
+    btn.innerHTML = `<span class="spinner"></span>${i + 1}/${keys.length} 처리 중...`;
+    const actionCell = document.getElementById(`groupAction-${key}`);
     if (actionCell) actionCell.innerHTML = '<span class="spinner"></span><span style="color:var(--muted)">발행 중</span>';
     try {
-      const res = await fetch(`${API_BASE}/api/v1/invoices/${invoiceId}/issue`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/v1/invoices/issue-group`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invoice_ids: g.children.map(c => c.id) }),
+      });
       const data = await res.json();
-      if (res.ok && (data.status === 'AWAITING_PAYMENT' || data.status === 'ISSUED')) {
+      if (res.ok && data.status === 'ISSUED') {
         success++;
         if (actionCell) actionCell.innerHTML = '<span style="color:var(--green);font-size:12px">✅ 성공</span>';
       } else {
         failed++;
-        const msg = data.detail || data.popbill_response?.error || 'FAILED';
-        failures.push({ id: invoiceId, error: msg });
+        const msg = data.detail || data.error?.error || data.error || `HTTP ${res.status}`;
+        failures.push({ label: g.company_name, error: typeof msg === 'string' ? msg : JSON.stringify(msg) });
         if (actionCell) actionCell.innerHTML = `<span style="color:var(--red);font-size:12px" title="${msg}">❌ 실패</span>`;
       }
     } catch (e) {
       failed++;
-      failures.push({ id: invoiceId, error: e.message });
+      failures.push({ label: g.company_name, error: e.message });
       if (actionCell) actionCell.innerHTML = `<span style="color:var(--red);font-size:12px" title="${e.message}">❌ 실패</span>`;
     }
   }
@@ -721,12 +864,12 @@ async function executeBulkIssue() {
   const title = document.getElementById('resultTitle');
   const body = document.getElementById('resultBody');
   const link = document.getElementById('popbillLink');
-  title.textContent = failed === 0 ? '✅ 일괄 발행 완료' : `⚠️ 일괄 발행 결과`;
+  title.textContent = failed === 0 ? '✅ 일괄 발행 완료' : '⚠️ 일괄 발행 결과';
   const failuresHTML = failures.length
     ? `<div style="margin-top:12px;font-size:12px">
          <div style="font-weight:600;color:var(--red);margin-bottom:6px">실패 ${failures.length}건</div>
          <div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:8px 12px">
-           ${failures.map(f => `<div style="padding:4px 0;border-bottom:1px solid #F0EEEA"><span style="color:var(--muted)">#${f.id}</span> — ${f.error}</div>`).join('')}
+           ${failures.map(f => `<div style="padding:4px 0;border-bottom:1px solid #F0EEEA"><span style="color:var(--muted)">${f.label}</span> — ${f.error}</div>`).join('')}
          </div>
        </div>` : '';
   body.innerHTML = `
@@ -742,6 +885,128 @@ async function executeBulkIssue() {
 
   const activeView = document.querySelector('.view.active').id.replace('view-', '');
   if (VIEW_LOADERS[activeView]) VIEW_LOADERS[activeView]();
+}
+
+// ─── Single group actions (버튼 누르면 바로 확인 모달) ───
+let singleGroupTarget = null;
+
+async function openGroupIssueConfirm(key) {
+  const g = _getGroup(key);
+  if (!g) return;
+  singleGroupTarget = { action: 'issue', group: g };
+  const envIsTest = document.getElementById('envBadge').className.includes('test');
+  const wpList = g.children.map(c => c.business_name || c.dashboard_name || '-');
+
+  document.getElementById('confirmBody').innerHTML = `
+    <div class="kv"><div class="kv-key">법인</div><div class="kv-val fw">${g.company_name || '-'}</div></div>
+    <div class="kv"><div class="kv-key">사업자번호</div><div class="kv-val">${g.business_number || '-'}</div></div>
+    <div class="kv"><div class="kv-key">청구 기간</div><div class="kv-val">${g.billing_period}</div></div>
+    <div class="kv"><div class="kv-key">사업장 수</div><div class="kv-val"><strong>${g.children.length}</strong>개</div></div>
+    <div class="kv"><div class="kv-key">사업장 목록</div><div class="kv-val" style="font-size:12px;line-height:1.7">${wpList.join(', ')}</div></div>
+    <div class="kv"><div class="kv-key">공급가액 합계</div><div class="kv-val">₩${fmt(g.supply)}</div></div>
+    <div class="kv"><div class="kv-key">부가세 합계</div><div class="kv-val">₩${fmt(g.vat)}</div></div>
+    <div class="kv"><div class="kv-key">총요금 합계</div><div class="kv-val fw">₩${fmt(g.total)}</div></div>
+    <div class="warning-box ${envIsTest ? '' : 'danger'}">
+      ${envIsTest
+        ? '🧪 <strong>테스트 모드</strong> — 국세청 실전송 안됨'
+        : '⚠️ <strong>운영 모드</strong> — 세금계산서 1장으로 국세청에 전송되고 팝빌 포인트 100원 차감. 되돌릴 수 없음.'}
+    </div>`;
+  document.getElementById('confirmBtn').textContent = '발행 실행 (1장)';
+  document.getElementById('confirmBtn').onclick = executeGroupIssue;
+  document.getElementById('confirmModal').classList.add('open');
+}
+
+async function executeGroupIssue() {
+  if (!singleGroupTarget || singleGroupTarget.action !== 'issue') return;
+  const g = singleGroupTarget.group;
+  const btn = document.getElementById('confirmBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>발행 중...';
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/invoices/issue-group`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ invoice_ids: g.children.map(c => c.id) }),
+    });
+    const data = await res.json();
+    closeModal('confirmModal');
+    if (res.ok && data.status === 'ISSUED') {
+      showIssueResult(true, {
+        popbill_invoice_id: data.popbill_invoice_id,
+        actual_issue_date: new Date().toISOString().split('T')[0],
+        total_amount: data.amount_total,
+      });
+    } else {
+      const err = data.detail || data.error?.error || JSON.stringify(data);
+      showIssueResult(false, null, { error: err });
+    }
+  } catch (e) {
+    closeModal('confirmModal');
+    showIssueResult(false, null, { error: e.message });
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '발행 실행';
+    singleGroupTarget = null;
+    const activeView = document.querySelector('.view.active').id.replace('view-', '');
+    if (VIEW_LOADERS[activeView]) VIEW_LOADERS[activeView]();
+  }
+}
+
+async function openGroupCancelConfirm(key) {
+  const g = _getGroup(key);
+  if (!g) return;
+  singleGroupTarget = { action: 'cancel', group: g };
+  document.getElementById('cancelBody').innerHTML = `
+    <div class="kv"><div class="kv-key">법인</div><div class="kv-val fw">${g.company_name || '-'}</div></div>
+    <div class="kv"><div class="kv-key">팝빌 문서번호</div><div class="kv-val" style="font-family:monospace;font-size:12px">${g.children[0]?.popbill_invoice_id || '-'}</div></div>
+    <div class="kv"><div class="kv-key">청구 기간</div><div class="kv-val">${g.billing_period}</div></div>
+    <div class="kv"><div class="kv-key">사업장 수</div><div class="kv-val">${g.children.length}개</div></div>
+    <div class="kv"><div class="kv-key">총요금</div><div class="kv-val fw">₩${fmt(g.total)}</div></div>
+    <div style="margin-top:14px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">취소 사유 (선택)</div>
+      <textarea id="cancelReason" rows="2" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;resize:vertical" placeholder="예: 금액 오류, 고객 요청 등"></textarea>
+    </div>
+    <div class="warning-box danger">
+      ⚠️ 세금계산서 1장 취소되고, 해당 법인의 사업장 ${g.children.length}개 row 모두 <strong>취소됨</strong>으로 전환됩니다. 이미 팝빌에서 수동 취소된 건이라도 안전하게 동기화됩니다.
+    </div>`;
+  document.getElementById('cancelExecBtn').onclick = executeGroupCancel;
+  document.getElementById('cancelModal').classList.add('open');
+}
+
+async function executeGroupCancel() {
+  if (!singleGroupTarget || singleGroupTarget.action !== 'cancel') return;
+  const g = singleGroupTarget.group;
+  const reason = document.getElementById('cancelReason')?.value?.trim() || null;
+  const btn = document.getElementById('cancelExecBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>취소 처리 중...';
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/invoices/cancel-group`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        invoice_ids: g.children.map(c => c.id),
+        reason: reason || undefined,
+      }),
+    });
+    const data = await res.json();
+    closeModal('cancelModal');
+    if (res.ok && data.status === 'CANCELLED') {
+      showIssueResult(true, { popbill_invoice_id: data.popbill_invoice_id }, null, true);
+    } else {
+      const err = data.detail || JSON.stringify(data);
+      showIssueResult(false, null, { error: err }, true);
+    }
+  } catch (e) {
+    closeModal('cancelModal');
+    showIssueResult(false, null, { error: e.message }, true);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '취소 실행';
+    singleGroupTarget = null;
+    const activeView = document.querySelector('.view.active').id.replace('view-', '');
+    if (VIEW_LOADERS[activeView]) VIEW_LOADERS[activeView]();
+  }
 }
 
 // ═══════════════════════════════════════════
