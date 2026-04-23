@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>경영지원 자동화 — 하다 세금계산서 발행</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#F5F4F1; --surface:#FFF; --border:#E6E4DF;
+  --text:#1A1A18; --muted:#7A7870;
+  --red:#D94F3D; --red-bg:#FDF0EE;
+  --amber:#B8730A; --amber-bg:#FDF6EB;
+  --green:#2A7A4F; --green-bg:#EAF5EE;
+  --blue:#1A5CA8; --blue-bg:#EEF4FB;
+}
+body{font-family:'Noto Sans KR',-apple-system,sans-serif;background:var(--bg);color:var(--text);font-size:13px;min-height:100vh}
+
+/* ── Header ── */
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:16px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:20}
+.tb-title{font-size:18px;font-weight:700}
+.tb-sub{font-size:12px;color:var(--muted);margin-top:3px}
+.env-badge{padding:5px 10px;border-radius:6px;font-size:11px;font-weight:600}
+.env-badge.test{background:var(--amber-bg);color:var(--amber);border:1px solid #EDD9A3}
+.env-badge.prod{background:var(--red-bg);color:var(--red);border:1px solid #F5C5BF}
+
+/* ── Content ── */
+.content{padding:20px 24px;max-width:1400px;margin:0 auto}
+
+/* ── Info Banner ── */
+.info-banner{background:var(--blue-bg);border:1px solid #B8D4F0;border-radius:8px;padding:14px 18px;margin-bottom:16px;font-size:13px;color:var(--blue);line-height:1.6}
+.info-banner strong{font-weight:700}
+.info-banner ul{margin:6px 0 0 20px}
+
+/* ── Stats Cards ── */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 18px}
+.stat-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+.stat-value{font-size:24px;font-weight:700;letter-spacing:-.5px}
+.stat-value.green{color:var(--green)}
+.stat-value.amber{color:var(--amber)}
+.stat-value.blue{color:var(--blue)}
+
+/* ── Table ── */
+.tbl-wrap{background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:16px}
+.tbl-head{padding:12px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:#FAFAF8}
+.tbl-title{font-size:14px;font-weight:600}
+table{width:100%;border-collapse:collapse}
+thead th{padding:12px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border);background:#FAFAF8}
+tbody td{padding:14px;font-size:13px;border-bottom:1px solid var(--border);vertical-align:middle}
+tbody tr:hover{background:#FAFAF8}
+tbody tr:last-child td{border-bottom:none}
+.fw{font-weight:600}
+.sub{font-size:11px;color:var(--muted);margin-top:2px}
+.num{font-variant-numeric:tabular-nums;text-align:right}
+.badge{display:inline-block;padding:3px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.badge.scheduled{background:var(--amber-bg);color:var(--amber)}
+.badge.issued, .badge.awaiting_payment{background:var(--green-bg);color:var(--green)}
+.badge.failed{background:var(--red-bg);color:var(--red)}
+.badge.paid{background:var(--blue-bg);color:var(--blue)}
+
+/* ── Buttons ── */
+.btn{padding:7px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:var(--surface);color:var(--text);transition:all .12s;white-space:nowrap;font-family:inherit}
+.btn:hover{background:var(--bg)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn.pri{background:var(--blue);color:#fff;border-color:var(--blue)}
+.btn.pri:hover{opacity:.85;background:var(--blue)}
+.btn.danger{background:var(--red);color:#fff;border-color:var(--red)}
+.btn.danger:hover{opacity:.85;background:var(--red)}
+.btn.green{background:var(--green);color:#fff;border-color:var(--green)}
+.btn.sm{padding:5px 10px;font-size:11px}
+
+/* ── Modal ── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:100}
+.modal-overlay.open{display:flex}
+.modal{background:var(--surface);border-radius:10px;width:100%;max-width:560px;max-height:90vh;overflow:auto;box-shadow:0 10px 40px rgba(0,0,0,.2)}
+.modal-head{padding:18px 22px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.modal-title{font-size:16px;font-weight:700}
+.modal-close{cursor:pointer;color:var(--muted);font-size:20px;user-select:none}
+.modal-body{padding:22px}
+.modal-foot{padding:16px 22px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end}
+
+/* ── Confirm modal detail ── */
+.kv{display:flex;padding:8px 0;border-bottom:1px solid #F0EEEA;font-size:13px}
+.kv-key{min-width:120px;color:var(--muted);font-weight:500}
+.kv-val{flex:1;font-weight:500}
+.kv:last-child{border-bottom:none}
+.warning-box{background:var(--amber-bg);border:1px solid #EDD9A3;border-radius:6px;padding:10px 14px;margin-top:16px;font-size:12px;color:var(--amber);line-height:1.6}
+.warning-box.danger{background:var(--red-bg);border-color:#F5C5BF;color:var(--red)}
+.success-box{background:var(--green-bg);border:1px solid #B6DFC6;border-radius:6px;padding:12px 16px;font-size:13px;color:var(--green);line-height:1.6}
+.error-box{background:var(--red-bg);border:1px solid #F5C5BF;border-radius:6px;padding:12px 16px;font-size:13px;color:var(--red);line-height:1.6;font-family:monospace;word-break:break-all}
+
+/* ── Loading ── */
+.loading{padding:40px;text-align:center;color:var(--muted);font-size:13px}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin 1s linear infinite;margin-right:8px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Mobile ── */
+@media(max-width:768px){
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .tbl-wrap{overflow-x:auto}
+  table{min-width:700px}
+}
+</style>
+</head>
+<body>
+
+<!-- ═══ Header ═══ -->
+<div class="topbar">
+  <div>
+    <div class="tb-title">하다 세금계산서 자동 발행</div>
+    <div class="tb-sub">경영지원 자동화 시스템 • 실제 팝빌 API 연동</div>
+  </div>
+  <div id="envBadge" class="env-badge test">⏳ 로딩 중...</div>
+</div>
+
+<!-- ═══ Content ═══ -->
+<div class="content">
+
+  <!-- Info Banner -->
+  <div class="info-banner">
+    <strong>📋 사용 방법</strong>
+    <ul>
+      <li>아래 표에서 발행할 인보이스 선택 → <strong>"발행" 버튼</strong> 클릭</li>
+      <li>확인 창에서 고객사 정보 + 금액 확인 후 <strong>"발행 실행"</strong></li>
+      <li>결과 표시됩니다 (성공/실패)</li>
+      <li>발행 후 <a href="https://www.popbill.com" target="_blank">팝빌 웹사이트</a>에서 매출 문서함 확인 가능</li>
+    </ul>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-label">전체 인보이스</div>
+      <div class="stat-value" id="statTotal">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">발행 대기</div>
+      <div class="stat-value amber" id="statScheduled">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">발행 완료</div>
+      <div class="stat-value green" id="statIssued">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">실패</div>
+      <div class="stat-value" style="color:var(--red)" id="statFailed">—</div>
+    </div>
+  </div>
+
+  <!-- Invoice Table -->
+  <div class="tbl-wrap">
+    <div class="tbl-head">
+      <div class="tbl-title">📄 2026년 3월 청구 인보이스</div>
+      <button class="btn sm" onclick="loadInvoices()">🔄 새로고침</button>
+    </div>
+    <div id="tableArea">
+      <div class="loading"><span class="spinner"></span>인보이스 불러오는 중...</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══ Confirm Modal ═══ -->
+<div class="modal-overlay" id="confirmModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">🧾 세금계산서 발행 확인</div>
+      <div class="modal-close" onclick="closeConfirm()">✕</div>
+    </div>
+    <div class="modal-body" id="confirmBody"></div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeConfirm()">취소</button>
+      <button class="btn pri" id="confirmBtn" onclick="executeIssue()">발행 실행</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ Result Modal ═══ -->
+<div class="modal-overlay" id="resultModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title" id="resultTitle">결과</div>
+      <div class="modal-close" onclick="closeResult()">✕</div>
+    </div>
+    <div class="modal-body" id="resultBody"></div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeResult()">닫기</button>
+      <a class="btn pri" href="https://www.popbill.com" target="_blank" id="popbillLink" style="text-decoration:none;display:none">팝빌에서 확인 →</a>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════
+// 설정
+// ═══════════════════════════════════════════
+const API_BASE = 'https://billing-management-api.onrender.com';
+const BILLING_PERIOD = '2026-03';
+
+let currentInvoice = null;  // 발행 확인 모달에서 사용
+
+// ═══════════════════════════════════════════
+// 시작: 환경 체크 + 인보이스 목록 로드
+// ═══════════════════════════════════════════
+async function init() {
+  await checkEnvironment();
+  await loadInvoices();
+}
+
+async function checkEnvironment() {
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/debug/popbill/check`);
+    const data = await res.json();
+    const badge = document.getElementById('envBadge');
+    if (data.is_test) {
+      badge.className = 'env-badge test';
+      badge.textContent = '🧪 테스트 모드 (실발행 X)';
+    } else {
+      badge.className = 'env-badge prod';
+      badge.textContent = '⚠️ 운영 모드 (실제 국세청 전송)';
+    }
+  } catch (e) {
+    document.getElementById('envBadge').textContent = '❓ 환경 확인 실패';
+  }
+}
+
+// ═══════════════════════════════════════════
+// 인보이스 목록 로드
+// ═══════════════════════════════════════════
+async function loadInvoices() {
+  const tableArea = document.getElementById('tableArea');
+  tableArea.innerHTML = '<div class="loading"><span class="spinner"></span>인보이스 불러오는 중...</div>';
+
+  try {
+    const res = await fetch(
+      `${API_BASE}/api/v1/invoices?billing_period=${BILLING_PERIOD}&page_size=200`
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderStats(data.items);
+    renderTable(data.items);
+  } catch (e) {
+    tableArea.innerHTML = `<div class="loading" style="color:var(--red)">❌ 인보이스 로드 실패: ${e.message}</div>`;
+  }
+}
+
+function renderStats(items) {
+  document.getElementById('statTotal').textContent = items.length;
+  document.getElementById('statScheduled').textContent =
+    items.filter(i => i.status === 'SCHEDULED').length;
+  document.getElementById('statIssued').textContent =
+    items.filter(i => ['ISSUED', 'AWAITING_PAYMENT', 'PAID'].includes(i.status)).length;
+  document.getElementById('statFailed').textContent =
+    items.filter(i => i.status === 'FAILED').length;
+}
+
+function renderTable(items) {
+  if (!items.length) {
+    document.getElementById('tableArea').innerHTML =
+      '<div class="loading">📭 인보이스가 없습니다</div>';
+    return;
+  }
+
+  const rows = items.map(inv => {
+    const canIssue = ['SCHEDULED', 'FAILED'].includes(inv.status);
+    const statusLabel = {
+      SCHEDULED: '발행 대기',
+      ISSUED: '발행 완료',
+      AWAITING_PAYMENT: '입금 대기',
+      PAID: '입금 완료',
+      FAILED: '실패',
+      CANCELLED: '취소됨',
+      OVERDUE: '연체'
+    }[inv.status] || inv.status;
+
+    return `
+      <tr>
+        <td>
+          <div class="fw">${inv.company_name || '-'}</div>
+          <div class="sub">${inv.dashboard_name || ''}</div>
+        </td>
+        <td>${inv.business_name || '-'}</td>
+        <td>${inv.billing_period}</td>
+        <td class="num">₩${fmt(inv.supply_amount)}</td>
+        <td class="num">₩${fmt(inv.vat_amount)}</td>
+        <td class="num fw">₩${fmt(inv.total_amount)}</td>
+        <td><span class="badge ${inv.status.toLowerCase()}">${statusLabel}</span></td>
+        <td>
+          ${canIssue
+            ? `<button class="btn pri sm" onclick="openConfirm(${inv.id})">발행</button>`
+            : `<button class="btn sm" disabled>완료</button>`}
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  document.getElementById('tableArea').innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>고객사 (상호 / 표시명)</th>
+          <th>사업장명</th>
+          <th>사용월</th>
+          <th>공급가액</th>
+          <th>부가세</th>
+          <th>총요금</th>
+          <th>상태</th>
+          <th>발행</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function fmt(n) {
+  return Number(n || 0).toLocaleString('ko-KR');
+}
+
+// ═══════════════════════════════════════════
+// 발행 확인 모달
+// ═══════════════════════════════════════════
+async function openConfirm(invoiceId) {
+  const modal = document.getElementById('confirmModal');
+  modal.classList.add('open');
+  document.getElementById('confirmBody').innerHTML =
+    '<div class="loading"><span class="spinner"></span>정보 불러오는 중...</div>';
+
+  try {
+    const invRes = await fetch(`${API_BASE}/api/v1/invoices?customer_id=&page_size=500`);
+    const invData = await invRes.json();
+    const invoice = invData.items.find(i => i.id === invoiceId);
+    if (!invoice) throw new Error('인보이스를 찾을 수 없습니다');
+
+    const custRes = await fetch(`${API_BASE}/api/v1/customers/${invoice.customer_id}`);
+    const customer = await custRes.json();
+
+    currentInvoice = { invoice, customer };
+
+    const envIsTest = document.getElementById('envBadge').className.includes('test');
+
+    document.getElementById('confirmBody').innerHTML = `
+      <div class="kv"><div class="kv-key">고객사</div><div class="kv-val">${customer.company_name}</div></div>
+      <div class="kv"><div class="kv-key">사업장명</div><div class="kv-val">${customer.business_name || '-'}</div></div>
+      <div class="kv"><div class="kv-key">사업자번호</div><div class="kv-val">${customer.business_number || '❌ 미등록'}</div></div>
+      <div class="kv"><div class="kv-key">대표자</div><div class="kv-val">${customer.ocr_ceo_name || '-'}</div></div>
+      <div class="kv"><div class="kv-key">수신 이메일</div><div class="kv-val">${customer.tax_invoice_email || '❌ 미등록'}</div></div>
+      <div class="kv"><div class="kv-key">청구 기간</div><div class="kv-val">${invoice.billing_period}</div></div>
+      <div class="kv"><div class="kv-key">공급가액</div><div class="kv-val">₩${fmt(invoice.supply_amount)}</div></div>
+      <div class="kv"><div class="kv-key">부가세</div><div class="kv-val">₩${fmt(invoice.vat_amount)}</div></div>
+      <div class="kv"><div class="kv-key">총요금</div><div class="kv-val fw">₩${fmt(invoice.total_amount)}</div></div>
+      <div class="warning-box ${envIsTest ? '' : 'danger'}">
+        ${envIsTest
+          ? '🧪 <strong>테스트 모드</strong>입니다. 국세청에 실제 전송되지 않고 포인트도 차감되지 않습니다.'
+          : '⚠️ <strong>운영 모드</strong>입니다. 확인 후 발행하면 <strong>국세청에 실제로 전송</strong>되고 팝빌 포인트가 차감됩니다. 필요 시 팝빌 웹에서 즉시 취소 가능합니다.'}
+      </div>
+    `;
+  } catch (e) {
+    document.getElementById('confirmBody').innerHTML =
+      `<div class="error-box">정보 로드 실패: ${e.message}</div>`;
+  }
+}
+
+function closeConfirm() {
+  document.getElementById('confirmModal').classList.remove('open');
+  currentInvoice = null;
+}
+
+// ═══════════════════════════════════════════
+// 실제 발행 실행
+// ═══════════════════════════════════════════
+async function executeIssue() {
+  if (!currentInvoice) return;
+  const btn = document.getElementById('confirmBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>발행 중...';
+
+  try {
+    const res = await fetch(
+      `${API_BASE}/api/v1/invoices/${currentInvoice.invoice.id}/issue`,
+      { method: 'POST' }
+    );
+    const data = await res.json();
+
+    closeConfirm();
+
+    if (data.status === 'AWAITING_PAYMENT' || data.status === 'ISSUED') {
+      showResult(true, data);
+    } else {
+      // FAILED — fetch popbill_response for error detail
+      const rawRes = await fetch(`${API_BASE}/api/v1/debug/invoice/${currentInvoice.invoice.id}/raw`);
+      const raw = await rawRes.json();
+      showResult(false, data, raw.popbill_response);
+    }
+
+    loadInvoices();  // refresh
+  } catch (e) {
+    closeConfirm();
+    showResult(false, null, { error: e.message });
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '발행 실행';
+  }
+}
+
+function showResult(success, invoice, errorDetail) {
+  const modal = document.getElementById('resultModal');
+  const title = document.getElementById('resultTitle');
+  const body = document.getElementById('resultBody');
+  const link = document.getElementById('popbillLink');
+
+  if (success) {
+    title.textContent = '✅ 발행 성공';
+    body.innerHTML = `
+      <div class="success-box">
+        세금계산서가 정상적으로 발행되었습니다.
+      </div>
+      <div style="margin-top:16px">
+        <div class="kv"><div class="kv-key">팝빌 문서번호</div><div class="kv-val">${invoice.popbill_invoice_id || '-'}</div></div>
+        <div class="kv"><div class="kv-key">발행일</div><div class="kv-val">${invoice.actual_issue_date || new Date().toISOString().split('T')[0]}</div></div>
+        <div class="kv"><div class="kv-key">총요금</div><div class="kv-val">₩${fmt(invoice.total_amount)}</div></div>
+        <div class="kv"><div class="kv-key">상태</div><div class="kv-val"><span class="badge awaiting_payment">입금 대기</span></div></div>
+      </div>
+      <div class="warning-box" style="margin-top:16px">
+        📬 고객 이메일로 세금계산서가 발송됩니다. 팝빌 웹에서도 확인 가능합니다.
+      </div>
+    `;
+    link.style.display = 'inline-flex';
+  } else {
+    title.textContent = '❌ 발행 실패';
+    const err = errorDetail?.error || '알 수 없는 오류';
+    body.innerHTML = `
+      <div class="error-box">
+        <strong>에러:</strong><br>${err}
+      </div>
+      <div class="warning-box" style="margin-top:16px">
+        위 에러 메시지를 Jun에게 공유해주세요. 빠르게 확인하겠습니다.
+      </div>
+    `;
+    link.style.display = 'none';
+  }
+
+  modal.classList.add('open');
+}
+
+function closeResult() {
+  document.getElementById('resultModal').classList.remove('open');
+}
+
+// ═══════════════════════════════════════════
+// Go!
+// ═══════════════════════════════════════════
+init();
+</script>
+
+</body>
+</html>
