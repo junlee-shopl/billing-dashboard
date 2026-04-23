@@ -234,14 +234,21 @@ tbody tr:last-child td{border-bottom:none}
 
     <!-- ─── View: 파트너사 정산 ─── -->
     <div class="view" id="view-partners-billing">
-      <div class="info-banner amber">
-        <strong>🔨 파트너사 정산 뷰 (준비 중)</strong><br>
-        파트너사별 월별 수수료 정산 현황을 여기서 확인합니다. 현재는 파트너사 목록만 표시됩니다.
+      <div class="info-banner">
+        <strong>💰 파트너사 월별 수수료 정산</strong> · 기간 내 발행된 인보이스(취소 제외) 기준으로 파트너별 수수료 집계. 행 클릭 → 인보이스 상세.
       </div>
+      <div class="stats" id="settlementStats"></div>
       <div class="tbl-wrap">
         <div class="tbl-head">
-          <div class="tbl-title">🤝 파트너사 목록 (현재 월 정산 기준)</div>
-          <button class="btn sm" onclick="loadPartnersBilling()">🔄 새로고침</button>
+          <div class="tbl-title">🤝 파트너사별 정산 현황</div>
+          <div class="tbl-actions">
+            <select class="form-select" style="width:130px" id="settlementPeriod" onchange="loadPartnersBilling()">
+              <option value="2026-03">2026년 3월</option>
+              <option value="2026-04">2026년 4월</option>
+              <option value="2026-05">2026년 5월</option>
+            </select>
+            <button class="btn sm" onclick="loadPartnersBilling()">🔄 새로고침</button>
+          </div>
         </div>
         <div id="partnersBillingArea"><div class="loading"><span class="spinner"></span>로딩 중...</div></div>
       </div>
@@ -339,6 +346,20 @@ tbody tr:last-child td{border-bottom:none}
     <div class="modal-foot">
       <button class="btn" onclick="closeModal('resultModal')">닫기</button>
       <a class="btn pri" href="https://www.popbill.com" target="_blank" id="popbillLink" style="text-decoration:none;display:none">팝빌에서 확인 →</a>
+    </div>
+  </div>
+</div>
+
+<!-- Settlement Detail -->
+<div class="modal-overlay" id="settlementDetailModal">
+  <div class="modal" style="max-width:720px">
+    <div class="modal-head">
+      <div class="modal-title" id="settlementDetailTitle">정산 상세</div>
+      <div class="modal-close" onclick="closeModal('settlementDetailModal')">✕</div>
+    </div>
+    <div class="modal-body" id="settlementDetailBody"></div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('settlementDetailModal')">닫기</button>
     </div>
   </div>
 </div>
@@ -900,39 +921,115 @@ function showIssueResult(success, invoice, errorDetail, isCancel = false) {
 // ═══════════════════════════════════════════
 // VIEW: 파트너사 정산
 // ═══════════════════════════════════════════
+let settlementCache = null;  // 현재 로드된 settlement 응답 (detail modal에서 재사용)
+
 async function loadPartnersBilling() {
   const area = document.getElementById('partnersBillingArea');
   area.innerHTML = '<div class="loading"><span class="spinner"></span>로딩 중...</div>';
+  const period = document.getElementById('settlementPeriod').value;
   try {
-    const res = await fetch(`${API_BASE}/api/v1/partners?page_size=200`);
+    const res = await fetch(`${API_BASE}/api/v1/partners/settlement?period=${period}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    settlementCache = data;
+
+    renderStatsInto('settlementStats', [
+      { label: `${period} 정산 파트너사`, value: data.summary.partner_count, color: 'blue' },
+      { label: '대상 인보이스', value: data.summary.invoice_count },
+      { label: '수수료 합계', value: `₩${fmt(data.summary.total_commission)}`, color: 'green' },
+    ]);
+
     if (!data.items.length) {
-      area.innerHTML = '<div class="loading">📭 등록된 파트너사가 없습니다. "파트너사 관리"에서 추가하세요.</div>';
+      area.innerHTML = '<div class="loading">📭 해당 기간에 정산 대상 인보이스가 없습니다.<br><span style="font-size:11px">(파트너사가 등록돼 있고 고객사와 매핑된 경우에만 표시됩니다)</span></div>';
       return;
     }
+
     const rows = data.items.map(p => `
-      <tr>
-        <td><div class="fw">${p.name}</div><div class="sub">${p.type === 'BUSINESS' ? '사업자' : '개인'}</div></td>
-        <td>${p.business_number || '-'}</td>
-        <td>${p.bank_name || '-'}</td>
-        <td>${p.account_number || '-'}</td>
-        <td>${p.account_holder || '-'}</td>
+      <tr onclick="openSettlementDetail(${p.partner_id})" style="cursor:pointer">
+        <td>
+          <div class="fw">${p.partner_name}</div>
+          <div class="sub">${p.partner_type === 'BUSINESS' ? '사업자' : '개인'}${p.business_number ? ' · ' + p.business_number : ''}</div>
+        </td>
+        <td>
+          <div>${p.bank_name || '-'} ${p.account_number || ''}</div>
+          <div class="sub">${p.account_holder || ''}</div>
+        </td>
         <td>${p.contact_email || '-'}</td>
-        <td class="num">₩0</td>
-        <td><span class="badge scheduled">준비 중</span></td>
+        <td class="num fw">${p.invoice_count}건</td>
+        <td class="num fw" style="color:var(--green)">₩${fmt(p.total_commission)}</td>
+        <td><button class="btn sm" onclick="event.stopPropagation();openSettlementDetail(${p.partner_id})">상세</button></td>
       </tr>`).join('');
+
     area.innerHTML = `
       <div class="tbl-wrap-scroll">
       <table>
         <thead><tr>
-          <th>파트너사</th><th>사업자번호</th><th>은행</th><th>계좌번호</th><th>예금주</th>
-          <th>이메일</th><th>이번달 정산</th><th>상태</th>
+          <th>파트너사</th>
+          <th>계좌 정보</th>
+          <th>이메일</th>
+          <th>인보이스</th>
+          <th>수수료 합계</th>
+          <th></th>
         </tr></thead>
         <tbody>${rows}</tbody>
+        <tfoot>
+          <tr style="background:#FAFAF8;font-weight:600">
+            <td colspan="3" style="padding:12px 14px">합계</td>
+            <td class="num">${data.summary.invoice_count}건</td>
+            <td class="num" style="color:var(--green)">₩${fmt(data.summary.total_commission)}</td>
+            <td></td>
+          </tr>
+        </tfoot>
       </table></div>`;
   } catch (e) {
     area.innerHTML = `<div class="loading" style="color:var(--red)">❌ ${e.message}</div>`;
   }
+}
+
+function openSettlementDetail(partnerId) {
+  if (!settlementCache) return;
+  const p = settlementCache.items.find(x => x.partner_id === partnerId);
+  if (!p) return;
+
+  const title = document.getElementById('settlementDetailTitle');
+  const body = document.getElementById('settlementDetailBody');
+  title.textContent = `🤝 ${p.partner_name} · ${settlementCache.period} 정산 상세`;
+
+  const invRows = p.invoices.map(inv => `
+    <tr>
+      <td>
+        <div class="fw">${inv.customer_name || '-'}</div>
+        <div class="sub">${inv.dashboard_name || ''}</div>
+      </td>
+      <td class="num">₩${fmt(inv.invoice_total)}</td>
+      <td class="num">${(inv.commission_rate * 100).toFixed(2)}%</td>
+      <td class="num fw" style="color:var(--green)">₩${fmt(inv.commission_amount)}</td>
+      <td>${statusBadge(inv.invoice_status)}</td>
+    </tr>`).join('');
+
+  body.innerHTML = `
+    <div class="kv"><div class="kv-key">예금주</div><div class="kv-val">${p.account_holder || '-'}</div></div>
+    <div class="kv"><div class="kv-key">계좌</div><div class="kv-val">${p.bank_name || '-'} ${p.account_number || ''}</div></div>
+    <div class="kv"><div class="kv-key">이메일</div><div class="kv-val">${p.contact_email || '-'}</div></div>
+    <div class="kv"><div class="kv-key">인보이스</div><div class="kv-val fw">${p.invoice_count}건</div></div>
+    <div class="kv"><div class="kv-key">수수료 합계</div><div class="kv-val fw" style="color:var(--green)">₩${fmt(p.total_commission)}</div></div>
+    <hr style="margin:16px 0;border:none;border-top:1px solid var(--border)">
+    <div style="font-size:13px;font-weight:600;margin-bottom:8px">인보이스별 내역</div>
+    <div style="max-height:380px;overflow-y:auto;border:1px solid var(--border);border-radius:6px">
+    <table style="font-size:12px">
+      <thead>
+        <tr>
+          <th>고객사</th>
+          <th class="num">인보이스 금액</th>
+          <th class="num">요율</th>
+          <th class="num">수수료</th>
+          <th>상태</th>
+        </tr>
+      </thead>
+      <tbody>${invRows}</tbody>
+    </table>
+    </div>`;
+  document.getElementById('settlementDetailModal').classList.add('open');
 }
 
 // ═══════════════════════════════════════════
