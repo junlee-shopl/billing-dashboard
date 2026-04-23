@@ -468,9 +468,9 @@ async function loadShopl() {
   area.innerHTML = '<div class="loading"><span class="spinner"></span>로딩 중...</div>';
   try {
     const period = '2026-03';
-    const invRes = await fetch(`${API_BASE}/api/v1/invoices?billing_period=${period}&page_size=500`);
+    const invRes = await fetch(`${API_BASE}/api/v1/invoices?billing_period=${period}&page_size=200`);
     const invData = await invRes.json();
-    const custRes = await fetch(`${API_BASE}/api/v1/customers?service=SHOPL&page_size=500`);
+    const custRes = await fetch(`${API_BASE}/api/v1/customers?service=SHOPL&page_size=200`);
     const custData = await custRes.json();
 
     // filter invoices to SHOPL customers only
@@ -497,9 +497,9 @@ async function loadHada() {
   area.innerHTML = '<div class="loading"><span class="spinner"></span>로딩 중...</div>';
   try {
     const period = document.getElementById('hadaPeriod').value;
-    const invRes = await fetch(`${API_BASE}/api/v1/invoices?billing_period=${period}&page_size=500`);
+    const invRes = await fetch(`${API_BASE}/api/v1/invoices?billing_period=${period}&page_size=200`);
     const invData = await invRes.json();
-    const custRes = await fetch(`${API_BASE}/api/v1/customers?service=HADA&page_size=500`);
+    const custRes = await fetch(`${API_BASE}/api/v1/customers?service=HADA&page_size=200`);
     const custData = await custRes.json();
 
     const hadaCustIds = new Set(custData.items.map(c => c.id));
@@ -576,7 +576,7 @@ async function openIssueConfirm(invoiceId) {
   document.getElementById('confirmModal').classList.add('open');
   document.getElementById('confirmBody').innerHTML = '<div class="loading"><span class="spinner"></span>정보 불러오는 중...</div>';
   try {
-    const invRes = await fetch(`${API_BASE}/api/v1/invoices?page_size=500`);
+    const invRes = await fetch(`${API_BASE}/api/v1/invoices?page_size=200`);
     const invData = await invRes.json();
     const invoice = invData.items.find(i => i.id === invoiceId);
     if (!invoice) throw new Error('인보이스를 찾을 수 없습니다');
@@ -860,7 +860,7 @@ async function openPartnerEdit(partnerId) {
   document.getElementById('partnerEditTitle').textContent = '파트너사 수정';
   document.getElementById('partnerEditBody').innerHTML = '<div class="loading"><span class="spinner"></span>로딩...</div>';
   try {
-    const res = await fetch(`${API_BASE}/api/v1/partners?page_size=500`);
+    const res = await fetch(`${API_BASE}/api/v1/partners?page_size=200`);
     const data = await res.json();
     const partner = data.items.find(p => p.id === partnerId);
     if (!partner) throw new Error('파트너사를 찾을 수 없습니다');
